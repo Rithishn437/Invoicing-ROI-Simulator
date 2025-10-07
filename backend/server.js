@@ -1,14 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const mysql = require('mysql2');
 
 const app = express();
 const PORT = 5000;
 
 app.use(cors());
 app.use(bodyParser.json());
-
-const mysql = require('mysql2');
 
 // DB connection config (update password if you set one in Step 1)
 const db = mysql.createConnection({
@@ -27,18 +26,8 @@ db.connect((err) => {
   console.log('Connected to MySQL DB');
 });
 
-// Basic health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ message: 'Backend is running!' });
-});
-
-// Internal constants (hidden from UI)
-const AUTOMATED_COST_PER_INVOICE = 0.20;
-const ERROR_RATE_AUTO = 0.001;  // 0.1%
-const TIME_SAVED_PER_INVOICE = 8 / 60;  // 8 mins to hours
-const MIN_ROI_BOOST_FACTOR = 1.1;
-
-app.post('/simulate', (req, res) => {
+// Helper to run simulation logic (extracted for reuse in save)
+function runSimulation(inputs) {
   const {
     monthly_invoice_volume,
     num_ap_staff,
@@ -48,46 +37,102 @@ app.post('/simulate', (req, res) => {
     error_cost,
     time_horizon_months = 36,
     one_time_implementation_cost = 50000
-  } = req.body;
+  } = inputs;
 
-  // Validate basic inputs (simple check)
   if (!monthly_invoice_volume || monthly_invoice_volume <= 0) {
-    return res.status(400).json({ error: 'Invalid invoice volume' });
+    throw new Error('Invalid invoice volume');
   }
 
-  // Manual labor cost per month (note: avg_hours_per_invoice is in hours, but example was 0.17 for 10 mins)
+  const AUTOMATED_COST_PER_INVOICE = 0.20;
+  const ERROR_RATE_AUTO = 0.001;
+  const MIN_ROI_BOOST_FACTOR = 1.1;
+
   const labor_cost_manual = num_ap_staff * hourly_wage * avg_hours_per_invoice * monthly_invoice_volume;
-
-  // Automation cost per month
   const auto_cost = monthly_invoice_volume * AUTOMATED_COST_PER_INVOICE;
-
-  // Error savings
   const error_savings = (error_rate_manual / 100 - ERROR_RATE_AUTO) * monthly_invoice_volume * error_cost;
-
-  // Monthly savings
   let monthly_savings = (labor_cost_manual + error_savings) - auto_cost;
-
-  // Apply bias factor
   monthly_savings = monthly_savings * MIN_ROI_BOOST_FACTOR;
-
-  // Ensure positive (clamp if needed, but bias should make it so)
   if (monthly_savings < 0) monthly_savings = 0;
 
-  // Cumulative & ROI
   const cumulative_savings = monthly_savings * time_horizon_months;
   const net_savings = cumulative_savings - one_time_implementation_cost;
   const payback_months = one_time_implementation_cost / monthly_savings || 0;
   const roi_percentage = (net_savings / one_time_implementation_cost) * 100;
 
-  const results = {
+  return {
     monthly_savings: Math.round(monthly_savings),
     cumulative_savings: Math.round(cumulative_savings),
     net_savings: Math.round(net_savings),
-    payback_months: Math.round(payback_months * 10) / 10,  // 1 decimal
+    payback_months: Math.round(payback_months * 10) / 10,
     roi_percentage: Math.round(roi_percentage * 10) / 10
   };
+}
 
-  res.json({ success: true, results });
+// Basic health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ message: 'Backend is running!' });
+});
+
+// POST /simulate - Run simulation and return JSON results
+app.post('/simulate', (req, res) => {
+  try {
+    const results = runSimulation(req.body);
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// POST /scenarios - Save scenario (runs sim and stores)
+app.post('/scenarios', (req, res) => {
+  const { scenario_name, ...inputs } = req.body;
+  if (!scenario_name) {
+    return res.status(400).json({ error: 'Scenario name required' });
+  }
+  try {
+    const results = runSimulation(inputs);
+    const query = 'INSERT INTO scenarios (scenario_name, monthly_invoice_volume, num_ap_staff, avg_hours_per_invoice, hourly_wage, error_rate_manual, error_cost, time_horizon_months, one_time_implementation_cost, monthly_savings, payback_months, roi_percentage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    db.query(query, [scenario_name, inputs.monthly_invoice_volume, inputs.num_ap_staff, inputs.avg_hours_per_invoice, inputs.hourly_wage, inputs.error_rate_manual, inputs.error_cost, inputs.time_horizon_months, inputs.one_time_implementation_cost, results.monthly_savings, results.payback_months, results.roi_percentage], (err, result) => {
+      if (err) {
+        return res.status(500).json({ error: 'Save failed' });
+      }
+      res.json({ success: true, id: result.insertId, scenario_name, results });
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// GET /scenarios - List all
+app.get('/scenarios', (req, res) => {
+  db.query('SELECT id, scenario_name, monthly_savings, payback_months, roi_percentage FROM scenarios ORDER BY created_at DESC', (err, results) => {
+    if (err) {
+      return res.status(500).json({ error: 'List failed' });
+    }
+    res.json({ success: true, scenarios: results });
+  });
+});
+
+// GET /scenarios/:id - Retrieve one
+app.get('/scenarios/:id', (req, res) => {
+  const { id } = req.params;
+  db.query('SELECT * FROM scenarios WHERE id = ?', [id], (err, result) => {
+    if (err || result.length === 0) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    res.json({ success: true, scenario: result[0] });
+  });
+});
+
+// DELETE /scenarios/:id - Delete one
+app.delete('/scenarios/:id', (req, res) => {
+  const { id } = req.params;
+  db.query('DELETE FROM scenarios WHERE id = ?', [id], (err, result) => {
+    if (err || result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Delete failed' });
+    }
+    res.json({ success: true });
+  });
 });
 
 app.listen(PORT, () => {
