@@ -1,5 +1,6 @@
 import React, { useState, useEffect, ChangeEvent, FormEvent } from 'react';
 import axios from 'axios';
+import { saveAs } from 'file-saver';
 import './App.css';
 
 interface FormData {
@@ -53,6 +54,8 @@ function App() {
   const [results, setResults] = useState<SimulationResults | null>(null);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [showEmailInput, setShowEmailInput] = useState(false);
 
   // Load scenarios on mount
   useEffect(() => {
@@ -143,11 +146,39 @@ function App() {
     }
   };
 
+  const handleGenerateReport = async () => {
+    if (!formData.scenario_name) {
+      alert('Please enter a scenario name');
+      return;
+    }
+    try {
+      const response = await axios.post('http://localhost:5000/report/generate', {
+        email,
+        scenario_name: formData.scenario_name,
+        results
+      });
+      // Convert base64 to blob in browser
+      const byteCharacters = atob(response.data.pdfBase64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+      saveAs(blob, `${formData.scenario_name}_ROI_Report.pdf`);
+      setShowEmailInput(false);
+      setEmail('');
+      alert('Report downloaded!');
+    } catch (error) {
+      console.error('Report failed:', error);
+      alert('Error generating report');
+    }
+  };
+
   return (
     <div className="App">
       <h1>Invoicing ROI Simulator</h1>
       <form onSubmit={handleSubmit}>
-        {/* All previous form fields stay the same */}
         <label>
           Scenario Name:
           <input
@@ -256,6 +287,29 @@ function App() {
           <p>Net Savings: ${results.net_savings}</p>
           <p>Payback Period: {results.payback_months} months</p>
           <p>ROI: {results.roi_percentage}%</p>
+          <button 
+            onClick={() => setShowEmailInput(true)} 
+            style={{ marginTop: '10px', display: 'block' }}
+          >
+            Generate Report (Requires Email)
+          </button>
+          {showEmailInput && (
+            <div style={{ marginTop: '10px' }}>
+              <input
+                type="email"
+                placeholder="Enter your email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                style={{ marginRight: '10px' }}
+              />
+              <button onClick={handleGenerateReport} disabled={!email}>
+                Download PDF
+              </button>
+              <button onClick={() => { setShowEmailInput(false); setEmail(''); }} style={{ marginLeft: '5px' }}>
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
 

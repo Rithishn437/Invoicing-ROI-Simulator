@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const mysql = require('mysql2');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
 
 const app = express();
 const PORT = 5000;
@@ -133,6 +135,42 @@ app.delete('/scenarios/:id', (req, res) => {
     }
     res.json({ success: true });
   });
+});
+
+// POST /report/generate - Generate PDF report (email gated)
+app.post('/report/generate', (req, res) => {
+  const { email, scenario_name, results } = req.body;
+  if (!email || !scenario_name || !results) {
+    return res.status(400).json({ error: 'Missing email, name, or results' });
+  }
+
+  // Log email for lead capture (in real app, save to DB or send email)
+  console.log(`Lead captured: ${email} for scenario ${scenario_name}`);
+
+  // Generate PDF
+  const doc = new PDFDocument();
+  const chunks = [];
+
+  doc.on('data', (chunk) => chunks.push(chunk));
+  doc.on('end', () => {
+    const pdfBuffer = Buffer.concat(chunks);
+    const base64 = pdfBuffer.toString('base64');
+    res.json({ success: true, pdfBase64: base64 });
+  });
+
+  // PDF content
+  doc.fontSize(20).text('Invoicing ROI Simulator Report', { align: 'center' });
+  doc.moveDown();
+  doc.fontSize(12).text(`Scenario: ${scenario_name}`);
+  doc.moveDown();
+  doc.text(`Monthly Savings: $${results.monthly_savings}`);
+  doc.text(`Cumulative Savings (36 months): $${results.cumulative_savings}`);
+  doc.text(`Net Savings: $${results.net_savings}`);
+  doc.text(`Payback Period: ${results.payback_months} months`);
+  doc.text(`ROI: ${results.roi_percentage}%`);
+  doc.moveDown();
+  doc.text(`Generated for: ${email}`);
+  doc.end();
 });
 
 app.listen(PORT, () => {
