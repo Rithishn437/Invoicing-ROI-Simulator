@@ -1,6 +1,6 @@
-import React, { useState, ChangeEvent, FormEvent } from 'react';
+import React, { useState, useEffect, ChangeEvent, FormEvent } from 'react';
 import axios from 'axios';
-import './App.css';  // We'll ignore CSS for now
+import './App.css';
 
 interface FormData {
   scenario_name: string;
@@ -22,6 +22,22 @@ interface SimulationResults {
   roi_percentage: number;
 }
 
+interface Scenario {
+  id: number;
+  scenario_name: string;
+  monthly_savings: number;
+  payback_months: number;
+  roi_percentage: number;
+  monthly_invoice_volume: number;
+  num_ap_staff: number;
+  avg_hours_per_invoice: number;
+  hourly_wage: number;
+  error_rate_manual: number;
+  error_cost: number;
+  time_horizon_months: number;
+  one_time_implementation_cost: number;
+}
+
 function App() {
   const [formData, setFormData] = useState<FormData>({
     scenario_name: '',
@@ -35,7 +51,22 @@ function App() {
     one_time_implementation_cost: 50000
   });
   const [results, setResults] = useState<SimulationResults | null>(null);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Load scenarios on mount
+  useEffect(() => {
+    fetchScenarios();
+  }, []);
+
+  const fetchScenarios = async () => {
+    try {
+      const response = await axios.get('http://localhost:5000/scenarios');
+      setScenarios(response.data.scenarios);
+    } catch (error) {
+      console.error('Failed to fetch scenarios:', error);
+    }
+  };
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -57,10 +88,66 @@ function App() {
     setLoading(false);
   };
 
+  const handleSave = async () => {
+    if (!formData.scenario_name) {
+      alert('Please enter a scenario name');
+      return;
+    }
+    try {
+      await axios.post('http://localhost:5000/scenarios', formData);
+      alert('Scenario saved!');
+      fetchScenarios();  // Refresh list
+      setFormData({ ...formData, scenario_name: '' });  // Clear name
+    } catch (error) {
+      console.error('Save failed:', error);
+      alert('Error saving scenario');
+    }
+  };
+
+  const handleLoad = async (id: number) => {
+    try {
+      const response = await axios.get(`http://localhost:5000/scenarios/${id}`);
+      const scenario = response.data.scenario;
+      setFormData({
+        scenario_name: scenario.scenario_name,
+        monthly_invoice_volume: scenario.monthly_invoice_volume,
+        num_ap_staff: scenario.num_ap_staff,
+        avg_hours_per_invoice: scenario.avg_hours_per_invoice,
+        hourly_wage: scenario.hourly_wage,
+        error_rate_manual: scenario.error_rate_manual,
+        error_cost: scenario.error_cost,
+        time_horizon_months: scenario.time_horizon_months,
+        one_time_implementation_cost: scenario.one_time_implementation_cost
+      });
+      // Re-run sim on load
+      const simResponse = await axios.post('http://localhost:5000/simulate', {
+        ...formData,
+        scenario_name: scenario.scenario_name  // Include name but ignore in sim
+      });
+      setResults(simResponse.data.results);
+    } catch (error) {
+      console.error('Load failed:', error);
+      alert('Error loading scenario');
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!window.confirm('Delete this scenario?')) return;
+    try {
+      await axios.delete(`http://localhost:5000/scenarios/${id}`);
+      alert('Scenario deleted!');
+      fetchScenarios();  // Refresh list
+    } catch (error) {
+      console.error('Delete failed:', error);
+      alert('Error deleting scenario');
+    }
+  };
+
   return (
     <div className="App">
       <h1>Invoicing ROI Simulator</h1>
       <form onSubmit={handleSubmit}>
+        {/* All previous form fields stay the same */}
         <label>
           Scenario Name:
           <input
@@ -156,6 +243,9 @@ function App() {
         <button type="submit" disabled={loading}>
           {loading ? 'Calculating...' : 'Run Simulation'}
         </button>
+        <button type="button" onClick={handleSave} style={{ marginLeft: '10px' }}>
+          Save Scenario
+        </button>
       </form>
 
       {results && (
@@ -168,6 +258,27 @@ function App() {
           <p>ROI: {results.roi_percentage}%</p>
         </div>
       )}
+
+      <div>
+        <h2>Saved Scenarios</h2>
+        {scenarios.length === 0 ? (
+          <p>No scenarios saved yet.</p>
+        ) : (
+          <ul>
+            {scenarios.map((scenario) => (
+              <li key={scenario.id}>
+                {scenario.scenario_name} - Savings: ${scenario.monthly_savings}/mo, Payback: {scenario.payback_months} mo, ROI: {scenario.roi_percentage}%
+                <button onClick={() => handleLoad(scenario.id)} style={{ marginLeft: '10px' }}>
+                  Load
+                </button>
+                <button onClick={() => handleDelete(scenario.id)} style={{ marginLeft: '5px' }}>
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
